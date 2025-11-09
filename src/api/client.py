@@ -6,6 +6,8 @@ Handles both success (video upload) and failure (text-only) endpoints.
 import asyncio
 import logging
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import aiohttp
@@ -137,24 +139,29 @@ class AsyncAPIClient:
                     content_type="video/mp4",
                 )
 
+                # Add device_uid (required by API)
+                if self.device_uid:
+                    data.add_field("device_uid", self.device_uid)
+
                 # Add metadata as JSON
                 for key, value in metadata.items():
                     data.add_field(key, str(value))
 
-                # Send POST request
+                # Send POST request with progress logging
+                logger.info(f"Starting upload of {video_path.name}...")
                 async with session.post(
                     self.success_endpoint, data=data, headers=self._get_headers()
                 ) as response:
 
                     if response.status == 200:
                         logger.info(
-                            f"Successfully uploaded fall event: {video_path.name}"
+                            f"✓ Successfully uploaded fall event: {video_path.name}"
                         )
                         return True
                     else:
                         error_text = await response.text()
                         logger.error(
-                            f"Upload failed with status {response.status}: {error_text}"
+                            f"✗ Upload failed with status {response.status}: {error_text}"
                         )
 
             except TimeoutError:
@@ -317,6 +324,71 @@ class AsyncAPIClient:
 
         return any(results)
 
+    def device_checkin_sync(self) -> bool:
+        """
+        Send device check-in request to the server (synchronous version).
+
+        This method is designed to be called from a thread without async/await.
+        Uses urllib for synchronous HTTP requests.
+
+        Returns:
+            True if check-in successful, False otherwise
+        """
+        if not self.checkin_endpoint:
+            logger.warning("Check-in endpoint not configured, skipping check-in")
+            return False
+
+        if not self.device_uid:
+            logger.warning("Device UID not configured, skipping check-in")
+            return False
+
+        # Construct the full URL with device_uid
+        checkin_url = f"{self.checkin_endpoint}/{self.device_uid}"
+
+        try:
+            logger.info(f"Sending device check-in to {checkin_url}")
+
+            # Create request with headers
+            req = urllib.request.Request(checkin_url, method="GET")
+            if self.api_key:
+                req.add_header("Authorization", f"Bearer {self.api_key}")
+
+            # Send request with timeout
+            with urllib.request.urlopen(req, timeout=self.timeout.total) as response:
+                status = response.status
+                logger.info(f"Received response with status: {status}")
+
+                if status == 200:
+                    response_text = response.read().decode("utf-8")
+                    logger.info(
+                        f"Device check-in successful for {self.device_uid}, "
+                        f"response: {response_text[:100]}"
+                    )
+                    return True
+                else:
+                    error_text = response.read().decode("utf-8")
+                    logger.warning(
+                        f"Check-in failed with status {status}: {error_text}"
+                    )
+                    return False
+
+        except urllib.error.HTTPError as e:
+            error_text = e.read().decode("utf-8") if e.fp else str(e)
+            logger.warning(f"Check-in HTTP error {e.code}: {error_text}")
+            return False
+
+        except urllib.error.URLError as e:
+            logger.warning(f"Check-in URL error: {e.reason}")
+            return False
+
+        except TimeoutError:
+            logger.warning("Check-in timeout")
+            return False
+
+        except Exception as e:
+            logger.error(f"Unexpected error during check-in: {e}")
+            return False
+
     async def device_checkin(self) -> bool:
         """
         Send device check-in request to the server.
@@ -341,14 +413,19 @@ class AsyncAPIClient:
         checkin_url = f"{self.checkin_endpoint}/{self.device_uid}"
 
         try:
-            logger.debug(f"Sending device check-in to {checkin_url}")
+            logger.info(f"Sending device check-in to {checkin_url}")
 
             async with session.get(
                 checkin_url, headers=self._get_headers()
             ) as response:
+                logger.info(f"Received response with status: {response.status}")
 
                 if response.status == 200:
-                    logger.debug(f"Device check-in successful for {self.device_uid}")
+                    response_text = await response.text()
+                    logger.info(
+                        f"Device check-in successful for {self.device_uid}, "
+                        f"response: {response_text[:100]}"
+                    )
                     return True
                 else:
                     error_text = await response.text()

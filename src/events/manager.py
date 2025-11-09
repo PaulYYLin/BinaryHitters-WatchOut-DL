@@ -5,6 +5,7 @@ Coordinates video encoding and API uploads without blocking main detection loop.
 
 import asyncio
 import logging
+import queue
 import time
 from datetime import datetime
 
@@ -44,8 +45,9 @@ class FallEventManager:
         self.api_client = api_client
         self.settings = settings
 
-        # Event queue (thread-safe)
-        self.queue: asyncio.Queue = asyncio.Queue()
+        # Event queue (thread-safe for cross-thread communication)
+        # Using standard queue.Queue instead of asyncio.Queue for thread safety
+        self.queue: queue.Queue = queue.Queue()
 
         # Cooldown tracking
         self.last_event_time: float = 0
@@ -109,17 +111,20 @@ class FallEventManager:
             "event_id": event_id,
         }
 
-        # Add to queue (non-blocking)
+        # Add to queue (thread-safe, non-blocking)
         try:
             self.queue.put_nowait(event)
             self.total_events_triggered += 1
-            logger.info(
-                f"Fall event triggered and queued "
-                f"(total: {self.total_events_triggered})"
-            )
+            logger.info("=" * 60)
+            logger.info("🚨 FALL DETECTED! Event queued for processing")
+            logger.info(f"   Event #{self.total_events_triggered}")
+            logger.info(f"   Time: {event['datetime']}")
+            logger.info(f"   Queue size: {self.queue.qsize()}")
+            logger.info("   Video will be uploaded in ~7 seconds...")
+            logger.info("=" * 60)
             return True
 
-        except asyncio.QueueFull:
+        except queue.Full:
             logger.error("Event queue is full, cannot queue fall event")
             return False
 
@@ -140,18 +145,30 @@ class FallEventManager:
             task = asyncio.create_task(manager.process_events())
         """
         self.running = True
-        logger.info("Event processor started")
+        logger.info("✅ Event processor started and running in background")
+        logger.info("   Uploads will happen immediately when falls are detected")
 
         try:
             while self.running:
-                # Wait for event (with timeout to allow graceful shutdown)
+                # Wait for event from thread-safe queue (non-blocking with timeout)
                 try:
-                    event = await asyncio.wait_for(self.queue.get(), timeout=1.0)
-                except TimeoutError:
+                    # Use get with timeout to allow graceful shutdown
+                    event = self.queue.get(timeout=1.0)
+                except queue.Empty:
+                    # No events, yield control to event loop and continue
+                    await asyncio.sleep(0.01)
                     continue
 
-                # Process event
+                # Log that we're processing immediately
+                logger.info(
+                    "📥 Event processor received event, starting processing NOW..."
+                )
+
+                # Process event asynchronously
                 await self._process_single_event(event)
+
+                # Mark task as done for queue.join() in shutdown
+                self.queue.task_done()
 
         except asyncio.CancelledError:
             logger.info("Event processor cancelled")
@@ -169,7 +186,11 @@ class FallEventManager:
         """
         timestamp = event["timestamp"]
         event_id = event.get("event_id")
-        logger.info(f"Processing fall event from {event['datetime']}")
+
+        logger.info("=" * 60)
+        logger.info(f"🔄 Processing fall event from {event['datetime']}")
+        logger.info(f"   Event ID: {event_id or 'N/A'}")
+        logger.info("=" * 60)
 
         self.total_events_processed += 1
 
@@ -199,12 +220,14 @@ class FallEventManager:
             # Need to wait half of clip_duration to ensure we have enough frames after the fall
             post_fall_wait_time = self.settings.CLIP_DURATION / 2
             logger.info(
-                f"Waiting {post_fall_wait_time:.1f}s for post-fall video to be recorded..."
+                f"⏱️  Step 1/3: Waiting {post_fall_wait_time:.1f}s for post-fall video..."
             )
             await asyncio.sleep(post_fall_wait_time)
 
             # Step 3: Encode video clip
-            logger.info(f"Encoding {self.settings.CLIP_DURATION}s video clip...")
+            logger.info(
+                f"🎬 Step 2/3: Encoding {self.settings.CLIP_DURATION}s video clip..."
+            )
 
             # Use experiment video path if in exp_mode, otherwise use temp path
             if self.exp_mode and self.exp_logger and event_id:
@@ -250,7 +273,12 @@ class FallEventManager:
 
                 shutil.copy2(final_video_path, upload_path)
 
-            logger.info(f"Uploading {video_filename} to API...")
+            logger.info(f"📤 Step 3/3: Uploading {video_filename} to API...")
+            logger.info(
+                f"   Video size: {upload_path.stat().st_size / 1024 / 1024:.2f} MB"
+            )
+            logger.info("   This upload happens immediately in the background...")
+
             upload_success = await self.api_client.send_fall_event(
                 upload_path, metadata
             )
@@ -258,12 +286,12 @@ class FallEventManager:
             if upload_success:
                 self.total_events_uploaded += 1
                 logger.info(
-                    f"Fall event processed successfully "
-                    f"(uploaded: {self.total_events_uploaded}/{self.total_events_processed})"
+                    f"✅ Fall event uploaded successfully! "
+                    f"(Total uploaded: {self.total_events_uploaded}/{self.total_events_processed})"
                 )
             else:
                 self.total_events_failed += 1
-                logger.error("Failed to upload fall event")
+                logger.error(f"❌ Failed to upload fall event {video_filename}")
 
         except Exception as e:
             logger.error(f"Error processing fall event: {e}")
@@ -325,9 +353,13 @@ class FallEventManager:
         if remaining > 0:
             logger.info(f"Waiting for {remaining} events to process...")
             timeout = remaining * 30  # 30s per event estimate
-            try:
-                await asyncio.wait_for(self.queue.join(), timeout=timeout)
-            except TimeoutError:
+
+            # Wait for queue.join() in a non-blocking way
+            start_time = time.time()
+            while not self.queue.empty() and (time.time() - start_time) < timeout:
+                await asyncio.sleep(0.5)
+
+            if not self.queue.empty():
                 logger.warning(
                     f"Timeout waiting for queue to empty, "
                     f"{self.queue.qsize()} events remain"

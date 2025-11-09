@@ -1,18 +1,16 @@
 """
-Main entry point for Fall Detection System (Edge Device Optimized).
+Alternative main entry point with proper async handling for macOS GUI.
 
-This script runs the live camera fall detection system with:
-- MediaPipe pose estimation
-- Rule-based fall detection
-- Video recording with ring buffer
-- Async API integration
-- Optimized for edge devices
+This version runs the detector synchronously in main thread (for OpenCV),
+while using a separate thread for async event processing.
 """
 
 import asyncio
 import logging
 import signal
 import sys
+import threading
+import time
 
 from src import DEFAULT_FALL_DETECTOR_CONFIG, LiveCameraFallDetector
 from src.api import AsyncAPIClient
@@ -21,14 +19,8 @@ from src.events import FallEventManager
 from src.video import AsyncVideoEncoder, LightweightRingBuffer
 
 
-# Configure logging
 def setup_logging(settings):
-    """
-    Setup logging configuration.
-
-    Args:
-        settings: Settings instance
-    """
+    """Setup logging configuration."""
     log_file = settings.LOG_DIR / "fall_detection.log"
 
     logging.basicConfig(
@@ -41,16 +33,54 @@ def setup_logging(settings):
 logger = logging.getLogger(__name__)
 
 
-class FallDetectionSystem:
-    """
-    Main fall detection system orchestrator.
+class AsyncEventProcessor:
+    """Runs event processing in a separate thread with its own event loop."""
 
-    Manages all components:
-    - Camera detector
-    - Ring buffer
-    - Video encoder
-    - API client
-    - Event manager
+    def __init__(self, event_manager):
+        self.event_manager = event_manager
+        self.loop = None
+        self.thread = None
+        self.running = False
+
+    def start(self):
+        """Start the async processor in a separate thread."""
+        self.running = True
+        self.thread = threading.Thread(target=self._run_event_loop, daemon=False)
+        self.thread.start()
+        logger.info("Async event processor thread started")
+
+    def _run_event_loop(self):
+        """Run the event loop in thread."""
+        # Create new event loop for this thread
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+
+        try:
+            # Run the event processor
+            self.loop.run_until_complete(self.event_manager.process_events())
+        except Exception as e:
+            logger.error(f"Event processor error: {e}", exc_info=True)
+        finally:
+            self.loop.close()
+
+    def stop(self):
+        """Stop the event processor."""
+        self.running = False
+        if self.loop:
+            # Stop the event manager
+            self.loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self.event_manager.stop())
+            )
+
+        if self.thread:
+            self.thread.join(timeout=30)
+            logger.info("Async event processor thread stopped")
+
+
+class HybridFallDetectionSystem:
+    """
+    Hybrid fall detection system that runs OpenCV in main thread
+    and async processing in background thread.
     """
 
     def __init__(self):
@@ -60,7 +90,7 @@ class FallDetectionSystem:
         setup_logging(self.settings)
 
         logger.info("=" * 80)
-        logger.info("Fall Detection System - Edge Device Optimized")
+        logger.info("Fall Detection System - Hybrid Mode for macOS")
         logger.info("=" * 80)
 
         # Log configuration
@@ -78,8 +108,9 @@ class FallDetectionSystem:
         # Initialize components
         self._init_components()
 
-        # Background tasks
-        self.background_tasks = []
+        # Background processors
+        self.async_processor = None
+        self.checkin_thread = None
         self.running = False
 
     def _init_components(self):
@@ -145,67 +176,59 @@ class FallDetectionSystem:
 
         logger.info("All components initialized successfully")
 
-    async def periodic_checkin(self):
-        """
-        Periodic device check-in task.
-
-        Sends check-in requests to the server at regular intervals
-        to indicate that the device is online and operational.
-        """
+    def _checkin_thread_worker(self):
+        """Thread worker for periodic device check-in."""
         if not self.settings.API_CHECKIN_ENDPOINT or not self.settings.DEVICE_UID:
             logger.info("Device check-in not configured, skipping periodic check-ins")
             return
 
         logger.info(
-            f"Starting periodic device check-in "
-            f"(interval: {self.settings.CHECKIN_INTERVAL}s)"
+            f"Starting periodic device check-in (interval: {self.settings.CHECKIN_INTERVAL}s)"
         )
 
         while self.running:
             try:
-                success = await self.api_client.device_checkin()
+                # Perform check-in using synchronous method
+                success = self.api_client.device_checkin_sync()
+
                 if success:
-                    logger.info(
-                        f"Device check-in completed successfully "
-                        f"(next check-in in {self.settings.CHECKIN_INTERVAL}s)"
-                    )
+                    logger.info("Device check-in completed successfully")
                 else:
-                    logger.warning(
-                        f"Device check-in failed, will retry in "
-                        f"{self.settings.CHECKIN_INTERVAL}s"
-                    )
+                    logger.warning("Device check-in failed")
 
             except Exception as e:
-                logger.error(f"Error during device check-in: {e}")
+                logger.error(f"Error during device check-in: {e}", exc_info=True)
 
             # Wait for next check-in interval
-            await asyncio.sleep(self.settings.CHECKIN_INTERVAL)
+            if self.running:
+                time.sleep(self.settings.CHECKIN_INTERVAL)
 
         logger.info("Periodic device check-in stopped")
 
-    async def run(self):
+    def run(self):
         """
-        Run the fall detection system.
-
-        Starts:
-        1. Event processor (background task)
-        2. Periodic device check-in (background task)
-        3. Camera detector (main loop)
+        Run the fall detection system synchronously in main thread.
+        This is required for OpenCV on macOS.
         """
         self.running = True
 
         try:
-            # Start event processor in background
-            logger.info("Starting event processor...")
-            event_task = asyncio.create_task(self.event_manager.process_events())
-            self.background_tasks.append(event_task)
+            # Start async event processor in separate thread
+            logger.info("Starting async event processor...")
+            self.async_processor = AsyncEventProcessor(self.event_manager)
+            self.async_processor.start()
 
-            # Start periodic device check-in in background
+            # Wait a moment for processor to start
+            time.sleep(0.5)
+
+            # Start periodic device check-in in a separate thread
             logger.info("Starting periodic device check-in...")
-            checkin_task = asyncio.create_task(self.periodic_checkin())
-            self.background_tasks.append(checkin_task)
+            self.checkin_thread = threading.Thread(
+                target=self._checkin_thread_worker, daemon=True
+            )
+            self.checkin_thread.start()
 
-            # Run camera detector
+            # Run camera detector IN MAIN THREAD (required for OpenCV on macOS)
             logger.info("Starting camera detector...")
             logger.info("=" * 80)
             if self.settings.HEADLESS_MODE:
@@ -214,49 +237,43 @@ class FallDetectionSystem:
                 logger.info("Press 'q' in the video window to quit")
             logger.info("=" * 80)
 
-            # If headless mode, run in executor
-            # Otherwise run in main thread (required for cv2.imshow on macOS)
-            if self.settings.HEADLESS_MODE:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, self.detector.run)
-            else:
-                # Run in main thread for GUI support
-                self.detector.run()
+            # Run detector synchronously in main thread
+            self.detector.run()
 
         except KeyboardInterrupt:
             logger.info("Shutdown requested by user")
         except Exception as e:
             logger.error(f"Error during execution: {e}", exc_info=True)
         finally:
-            await self.shutdown()
+            self.shutdown()
 
-    async def shutdown(self):
-        """
-        Graceful shutdown of all components.
-        """
+    def shutdown(self):
+        """Graceful shutdown of all components."""
         logger.info("=" * 80)
         logger.info("Shutting down system...")
         logger.info("=" * 80)
 
-        # Stop event manager
-        if self.event_manager:
-            logger.info("Stopping event manager...")
-            await self.event_manager.stop()
+        # Signal threads to stop
+        self.running = False
+
+        # Stop async processor
+        if self.async_processor:
+            logger.info("Stopping async event processor...")
+            self.async_processor.stop()
             self.event_manager.log_statistics()
 
-        # Cancel background tasks
-        for task in self.background_tasks:
-            if not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+        # Wait for checkin thread to finish
+        if self.checkin_thread and self.checkin_thread.is_alive():
+            logger.info("Waiting for check-in thread to stop...")
+            self.checkin_thread.join(timeout=5)
 
-        # Close API client
-        if self.api_client:
+        # Close API client synchronously
+        if self.api_client and self.api_client._session:
             logger.info("Closing API client...")
-            await self.api_client.close()
+            # Create a simple event loop just for cleanup
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(self.api_client.close())
+            loop.close()
 
         # Log final statistics
         if self.ring_buffer:
@@ -267,34 +284,22 @@ class FallDetectionSystem:
         logger.info("=" * 80)
 
 
-async def main():
-    """
-    Main entry point with async support.
-    """
-    # Create system
-    system = FallDetectionSystem()
+def main():
+    """Main entry point for hybrid mode."""
+    system = HybridFallDetectionSystem()
 
     # Setup signal handlers for graceful shutdown
-    loop = asyncio.get_event_loop()
-
-    def signal_handler(sig):
+    def signal_handler(sig, frame):
         logger.info(f"Received signal {sig}")
-        # Create a task to shutdown gracefully
-        asyncio.create_task(system.shutdown())
-        loop.stop()
+        system.shutdown()
+        sys.exit(0)
 
-    # Register signal handlers (Unix only)
-    if sys.platform != "win32":
-        for sig in (signal.SIGTERM, signal.SIGINT):
-
-            def make_handler(s: signal.Signals = sig) -> None:
-                signal_handler(s)
-
-            loop.add_signal_handler(sig, make_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
 
     # Run system
     try:
-        await system.run()
+        system.run()
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
@@ -302,7 +307,7 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
         sys.exit(0)

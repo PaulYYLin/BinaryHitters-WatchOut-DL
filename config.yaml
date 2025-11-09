@@ -43,7 +43,7 @@ buffer:
 # ==================== Video Encoding ====================
 video:
   clip_duration: 14  # seconds to include in fall event clip (7s before + 7s after fall)
-  codec: mp4v       # mp4v (faster) or H264 (smaller)
+  codec: avc1       # avc1/H264 (web-compatible, S3 streaming) or mp4v (faster but limited browser support)
   bitrate: 1000000  # bits per second (1 Mbps)
 
 # ==================== Event Management ====================

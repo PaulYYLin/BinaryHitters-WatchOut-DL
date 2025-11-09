@@ -5,6 +5,7 @@ Encodes video clips in background to avoid blocking main detection loop.
 
 import asyncio
 import logging
+import subprocess
 from pathlib import Path
 
 import cv2
@@ -21,8 +22,8 @@ class AsyncVideoEncoder:
     Uses asyncio to run encoding in background thread pool, preventing
     blocking of the main camera/detection loop.
 
-    Uses mp4v codec which is faster than H264 on CPU-only devices,
-    making it ideal for edge deployment.
+    Uses H.264 codec with web-optimized settings for S3 streaming compatibility.
+    Falls back to mp4v if H.264 is not available.
     """
 
     def __init__(
@@ -36,21 +37,33 @@ class AsyncVideoEncoder:
         Initialize video encoder.
 
         Args:
-            codec: FourCC codec name ('mp4v', 'H264', 'MJPG', etc.)
+            codec: FourCC codec name ('mp4v', 'H264', 'avc1', etc.)
             fps: Frames per second for output video
             bitrate: Target bitrate in bits/second (1000000 = 1 Mbps)
             resolution: Output resolution (width, height)
         """
-        self.codec = codec
+        # Prefer H.264/AVC1 for web compatibility
+        if codec.lower() in ["h264", "avc1", "x264"]:
+            # Try avc1 first (best web compatibility)
+            self.codec = "avc1"
+            self.fourcc = cv2.VideoWriter_fourcc(*"avc1")
+        else:
+            self.codec = codec
+            self.fourcc = cv2.VideoWriter_fourcc(*codec)
+
         self.fps = fps
         self.bitrate = bitrate
         self.resolution = resolution
-        self.fourcc = cv2.VideoWriter_fourcc(*codec)
+        self.use_ffmpeg_postprocess = codec.lower() in ["h264", "avc1", "x264"]
 
         logger.info(
-            f"Initialized VideoEncoder: {codec} @ {fps}fps, "
+            f"Initialized VideoEncoder: {self.codec} @ {fps}fps, "
             f"{resolution[0]}x{resolution[1]}, {bitrate/1e6:.1f}Mbps"
         )
+        if self.use_ffmpeg_postprocess:
+            logger.info(
+                "Will use ffmpeg post-processing for web optimization (faststart)"
+            )
 
     async def encode_clip(
         self, frames: list[dict], output_path: Path, decode_func
@@ -110,13 +123,23 @@ class AsyncVideoEncoder:
             True if successful, False otherwise
         """
         writer = None
+        temp_path = None
         try:
             # Ensure output directory exists
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
+            # If using ffmpeg post-processing, write to temp file first
+            if self.use_ffmpeg_postprocess:
+                temp_path = (
+                    output_path.parent / f"{output_path.stem}_temp{output_path.suffix}"
+                )
+                write_path = temp_path
+            else:
+                write_path = output_path
+
             # Initialize video writer
             writer = cv2.VideoWriter(
-                str(output_path), self.fourcc, self.fps, self.resolution
+                str(write_path), self.fourcc, self.fps, self.resolution
             )
 
             if not writer.isOpened():
@@ -146,6 +169,25 @@ class AsyncVideoEncoder:
                 return False
 
             logger.debug(f"Encoded {encoded_count}/{len(frames)} frames successfully")
+
+            # Release writer before post-processing
+            writer.release()
+            writer = None
+
+            # Post-process with ffmpeg for web optimization
+            if self.use_ffmpeg_postprocess:
+                if not self._optimize_for_web(temp_path, output_path):
+                    logger.warning(
+                        "ffmpeg optimization failed, using unoptimized video"
+                    )
+                    # Fall back to temp file
+                    if temp_path.exists():
+                        temp_path.rename(output_path)
+                else:
+                    # Clean up temp file
+                    if temp_path.exists():
+                        temp_path.unlink()
+
             return True
 
         except Exception as e:
@@ -156,6 +198,73 @@ class AsyncVideoEncoder:
             # Always release writer
             if writer is not None:
                 writer.release()
+            # Clean up temp file if it exists
+            if temp_path and temp_path.exists() and output_path.exists():
+                try:
+                    temp_path.unlink()
+                except Exception:
+                    pass
+
+    def _optimize_for_web(self, input_path: Path, output_path: Path) -> bool:
+        """
+        Optimize video for web streaming using ffmpeg.
+
+        Moves moov atom to the beginning (faststart) for S3 streaming.
+
+        Args:
+            input_path: Input video file
+            output_path: Output optimized video file
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Check if ffmpeg is available
+            result = subprocess.run(
+                ["ffmpeg", "-version"], capture_output=True, timeout=5
+            )
+            if result.returncode != 0:
+                logger.warning("ffmpeg not available, skipping optimization")
+                return False
+
+            logger.debug("Optimizing video with ffmpeg for web streaming...")
+
+            # Use ffmpeg to re-encode with faststart
+            cmd = [
+                "ffmpeg",
+                "-i",
+                str(input_path),
+                "-c:v",
+                "libx264",  # H.264 codec
+                "-preset",
+                "fast",  # Fast encoding
+                "-crf",
+                "23",  # Quality (lower = better, 18-28 range)
+                "-movflags",
+                "+faststart",  # Enable streaming
+                "-y",  # Overwrite output
+                str(output_path),
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, timeout=30)
+
+            if result.returncode != 0:
+                stderr_text = result.stderr.decode("utf-8") if result.stderr else ""
+                logger.warning(f"ffmpeg failed: {stderr_text[:200]}")
+                return False
+
+            logger.debug("Video optimized for web streaming successfully")
+            return True
+
+        except FileNotFoundError:
+            logger.warning("ffmpeg not found, install it for better web compatibility")
+            return False
+        except subprocess.TimeoutExpired:
+            logger.warning("ffmpeg optimization timeout")
+            return False
+        except Exception as e:
+            logger.warning(f"ffmpeg optimization error: {e}")
+            return False
 
     async def encode_clip_from_buffer(
         self, ring_buffer, center_time: float, duration: int, output_path: Path

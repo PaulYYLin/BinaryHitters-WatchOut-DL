@@ -350,7 +350,11 @@ class LiveCameraFallDetector:
                     # Handle keyboard input
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
+                        logger.info("=" * 60)
                         logger.info("Quit requested by user")
+                        logger.info("Closing camera and preparing to shutdown...")
+                        logger.info("Any pending uploads will complete before exit.")
+                        logger.info("=" * 60)
                         break
                 else:
                     # Small delay to prevent CPU spinning
