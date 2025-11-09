@@ -288,13 +288,24 @@ class LiveCameraFallDetector:
                 if self.ring_buffer is not None:
                     self.frame_skip_counter += 1
                     if self.frame_skip_counter >= self.frame_skip:
-                        self.ring_buffer.add_frame(frame)
+                        # In privacy mode, save stick figure frame instead of original
+                        if self.privacy_mode and self.latest_landmarks is not None:
+                            privacy_frame = draw_privacy_skeleton(
+                                frame, self.latest_landmarks
+                            )
+                            self.ring_buffer.add_frame(privacy_frame)
+                        else:
+                            self.ring_buffer.add_frame(frame)
                         self.frame_skip_counter = 0
 
                 # Trigger fall event if detected
                 if self.fall_detected and self.event_manager is not None:
                     logger.warning("Fall detected! Triggering event...")
-                    self.event_manager.trigger_fall(self.fall_info)
+                    # Include landmarks in fall_info for experiment mode
+                    fall_info_with_landmarks = self.fall_info.copy()
+                    if self.latest_landmarks is not None:
+                        fall_info_with_landmarks["landmarks"] = self.latest_landmarks
+                    self.event_manager.trigger_fall(fall_info_with_landmarks)
                     # Set display status and timestamp
                     self.display_fall_status = True
                     self.last_fall_time = time.time()

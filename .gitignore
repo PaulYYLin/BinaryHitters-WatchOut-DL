@@ -239,3 +239,6 @@ logs/
 .DS_Store
 share/
 *.env
+
+
+experiment_data/*

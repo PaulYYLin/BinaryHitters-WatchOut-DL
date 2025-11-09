@@ -42,7 +42,7 @@ buffer:
 
 # ==================== Video Encoding ====================
 video:
-  clip_duration: 15  # seconds to include in fall event clip
+  clip_duration: 14  # seconds to include in fall event clip (7s before + 7s after fall)
   codec: mp4v       # mp4v (faster) or H264 (smaller)
   bitrate: 1000000  # bits per second (1 Mbps)
 
@@ -50,6 +50,14 @@ video:
 events:
   cooldown_period: 15  # seconds between fall events
   max_workers: 2       # thread pool size for async operations
+
+# ==================== Experiment Mode ====================
+experiment:
+  exp_mode: true  # Enable experimental data collection
+  output_dir: experiment_data  # Directory to save experimental data
+  save_landmarks: true  # Save landmark positions for each fall
+  save_detection_details: true  # Save which conditions triggered the fall
+  save_video: true  # Save ring-buffer video clips for analysis
 
 # ==================== MediaPipe Model ====================
 model:

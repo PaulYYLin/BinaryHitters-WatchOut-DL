@@ -74,6 +74,18 @@ class Settings:
         self.COOLDOWN_PERIOD: int = events_config.get("cooldown_period", 15)
         self.MAX_WORKERS: int = events_config.get("max_workers", 2)
 
+        # Experiment mode settings (from YAML)
+        experiment_config = config.get("experiment", {})
+        self.EXP_MODE: bool = experiment_config.get("exp_mode", False)
+        self.EXP_OUTPUT_DIR: Path = Path(
+            experiment_config.get("output_dir", "experiment_data")
+        )
+        self.EXP_SAVE_LANDMARKS: bool = experiment_config.get("save_landmarks", True)
+        self.EXP_SAVE_DETECTION_DETAILS: bool = experiment_config.get(
+            "save_detection_details", True
+        )
+        self.EXP_SAVE_VIDEO: bool = experiment_config.get("save_video", True)
+
         # API settings (from environment variables)
         self.API_SUCCESS_ENDPOINT: str = os.getenv("API_SUCCESS_ENDPOINT", "")
         self.API_FAILURE_ENDPOINT: str = os.getenv("API_FAILURE_ENDPOINT", "")
@@ -139,6 +151,11 @@ class Settings:
         # Create directories if they don't exist
         self.TEMP_DIR.mkdir(parents=True, exist_ok=True)
         self.LOG_DIR.mkdir(parents=True, exist_ok=True)
+        if self.EXP_MODE:
+            self.EXP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            logger.info(
+                f"Experiment mode enabled. Data will be saved to {self.EXP_OUTPUT_DIR}"
+            )
 
         # Validate numeric ranges
         if not 0 <= self.JPEG_QUALITY <= 100:

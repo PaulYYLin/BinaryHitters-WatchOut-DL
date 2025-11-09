@@ -8,6 +8,8 @@ import logging
 import time
 from datetime import datetime
 
+from ..utils.experiment_logger import ExperimentDataLogger
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,6 +60,13 @@ class FallEventManager:
         # Running flag
         self.running = False
 
+        # Experiment mode
+        self.exp_mode = settings.EXP_MODE
+        self.exp_logger = None
+        if self.exp_mode:
+            self.exp_logger = ExperimentDataLogger(settings.EXP_OUTPUT_DIR)
+            logger.info(f"Experiment mode enabled: {settings.EXP_OUTPUT_DIR}")
+
         logger.info(f"Initialized FallEventManager: cooldown={self.cooldown_period}s")
 
     def trigger_fall(self, fall_info: dict | None = None) -> bool:
@@ -87,11 +96,17 @@ class FallEventManager:
         # Update last event time
         self.last_event_time = current_time
 
+        # Generate event ID for experiment mode
+        event_id = None
+        if self.exp_mode and self.exp_logger:
+            event_id = self.exp_logger.generate_event_id()
+
         # Create event data
         event = {
             "timestamp": current_time,
             "datetime": datetime.fromtimestamp(current_time).isoformat(),
             "fall_info": fall_info or {},
+            "event_id": event_id,
         }
 
         # Add to queue (non-blocking)
@@ -114,10 +129,12 @@ class FallEventManager:
 
         Continuously runs in background, processing queued fall events.
         For each event:
-        1. Extract video clip from ring buffer
-        2. Encode clip to MP4
-        3. Upload to API
-        4. Cleanup temporary files
+        1. Save experiment data (if enabled)
+        2. Wait for post-fall video to be recorded (7 seconds)
+        3. Extract video clip from ring buffer (7s before + 7s after)
+        4. Encode clip to MP4
+        5. Upload to API
+        6. Cleanup temporary files
 
         This should be run as an asyncio task:
             task = asyncio.create_task(manager.process_events())
@@ -151,22 +168,55 @@ class FallEventManager:
             event: Event dictionary with timestamp and fall info
         """
         timestamp = event["timestamp"]
+        event_id = event.get("event_id")
         logger.info(f"Processing fall event from {event['datetime']}")
 
         self.total_events_processed += 1
 
         # Generate output filename
-        video_filename = f"fall_{int(timestamp)}.mp4"
+        if event_id:
+            video_filename = f"{event_id}.mp4"
+        else:
+            video_filename = f"fall_{int(timestamp)}.mp4"
         video_path = self.settings.TEMP_DIR / video_filename
 
         try:
-            # Step 1: Encode video clip
+            # Step 1: Save experiment data (if enabled)
+            fall_info = event.get("fall_info", {})
+            landmarks = fall_info.get("landmarks")
+
+            if self.exp_mode and self.exp_logger and event_id:
+                # Save JSON data with landmarks
+                self.exp_logger.save_fall_event(
+                    event_id=event_id,
+                    landmarks=landmarks,
+                    fall_info=fall_info,
+                    timestamp=timestamp,
+                    metadata={"device_id": self.settings.CAMERA_ID},
+                )
+
+            # Step 2: Wait for post-fall video to be recorded
+            # Need to wait half of clip_duration to ensure we have enough frames after the fall
+            post_fall_wait_time = self.settings.CLIP_DURATION / 2
+            logger.info(
+                f"Waiting {post_fall_wait_time:.1f}s for post-fall video to be recorded..."
+            )
+            await asyncio.sleep(post_fall_wait_time)
+
+            # Step 3: Encode video clip
             logger.info(f"Encoding {self.settings.CLIP_DURATION}s video clip...")
+
+            # Use experiment video path if in exp_mode, otherwise use temp path
+            if self.exp_mode and self.exp_logger and event_id:
+                final_video_path = self.exp_logger.get_video_path(event_id)
+            else:
+                final_video_path = video_path
+
             encode_success = await self.video_encoder.encode_clip_from_buffer(
                 self.ring_buffer,
                 center_time=timestamp,
                 duration=self.settings.CLIP_DURATION,
-                output_path=video_path,
+                output_path=final_video_path,
             )
 
             if not encode_success:
@@ -174,18 +224,36 @@ class FallEventManager:
                 await self._handle_failure(event, "Video encoding failed")
                 return
 
-            # Step 2: Prepare metadata
+            # Step 4: Prepare metadata for API (exclude landmarks to avoid serialization issues)
             metadata = {
                 "timestamp": timestamp,
                 "datetime": event["datetime"],
                 "device_id": self.settings.CAMERA_ID,
                 "clip_duration": self.settings.CLIP_DURATION,
-                **event.get("fall_info", {}),
+                "event_id": event_id,
             }
 
-            # Step 3: Upload to API
+            # Add fall_info to metadata but exclude landmarks (already saved separately)
+            for key, value in fall_info.items():
+                if (
+                    key != "landmarks"
+                ):  # Skip landmarks to avoid numpy array serialization issues
+                    metadata[key] = value
+
+            # Step 5: Upload to API (use temp copy if in exp_mode to preserve original)
+            upload_path = final_video_path
+            if self.exp_mode and not self.settings.EXP_SAVE_VIDEO:
+                # If exp_mode but not saving video, still need temp file for upload
+                upload_path = video_path
+                # Copy to temp location for upload
+                import shutil
+
+                shutil.copy2(final_video_path, upload_path)
+
             logger.info(f"Uploading {video_filename} to API...")
-            upload_success = await self.api_client.send_fall_event(video_path, metadata)
+            upload_success = await self.api_client.send_fall_event(
+                upload_path, metadata
+            )
 
             if upload_success:
                 self.total_events_uploaded += 1
@@ -202,13 +270,18 @@ class FallEventManager:
             await self._handle_failure(event, f"Processing error: {str(e)}")
 
         finally:
-            # Step 4: Cleanup - always delete temporary file
-            if video_path.exists():
+            # Step 6: Cleanup - delete temporary file (but not exp_mode videos)
+            if not self.exp_mode and video_path.exists():
                 try:
                     video_path.unlink()
                     logger.debug(f"Deleted temporary file: {video_filename}")
                 except Exception as e:
                     logger.warning(f"Failed to delete temporary file: {e}")
+            elif self.exp_mode and self.exp_logger and event_id:
+                # In exp_mode, log that video is saved
+                video_saved = self.exp_logger.get_video_path(event_id)
+                if video_saved.exists():
+                    logger.info(f"Experiment video saved: {video_saved}")
 
     async def _handle_failure(self, event: dict, error_message: str):
         """
@@ -222,12 +295,18 @@ class FallEventManager:
         """
         self.total_events_failed += 1
 
+        # Prepare metadata (exclude landmarks to avoid serialization issues)
+        fall_info = event.get("fall_info", {})
         metadata = {
             "timestamp": event["timestamp"],
             "datetime": event["datetime"],
             "device_id": self.settings.CAMERA_ID,
-            **event.get("fall_info", {}),
         }
+
+        # Add fall_info but exclude landmarks
+        for key, value in fall_info.items():
+            if key != "landmarks":
+                metadata[key] = value
 
         # Send failure notification (text only)
         await self.api_client.send_failure_notification(metadata, error_message)
