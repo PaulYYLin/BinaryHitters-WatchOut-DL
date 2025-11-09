@@ -120,14 +120,25 @@ class FallDetectionSystem:
         )
 
         # 5. Live camera detector
+        # Override default fall detector config with settings
+        fall_detector_config = DEFAULT_FALL_DETECTOR_CONFIG.copy()
+        fall_detector_config["fall_angle_threshold"] = (
+            self.settings.FALL_ANGLE_THRESHOLD
+        )
+        fall_detector_config["height_drop_threshold"] = (
+            self.settings.HEIGHT_DROP_THRESHOLD
+        )
+        fall_detector_config["velocity_threshold"] = self.settings.VELOCITY_THRESHOLD
+
         self.detector = LiveCameraFallDetector(
             model_path=str(self.settings.MODEL_PATH),
             camera_id=self.settings.CAMERA_ID,
-            fall_detector_config=DEFAULT_FALL_DETECTOR_CONFIG,
+            fall_detector_config=fall_detector_config,
             ring_buffer=self.ring_buffer,
             event_manager=self.event_manager,
             settings=self.settings,
             headless=self.settings.HEADLESS_MODE,
+            privacy_mode=self.settings.PRIVACY_MODE,
         )
 
         logger.info("All components initialized successfully")
@@ -138,7 +149,7 @@ class FallDetectionSystem:
 
         Starts:
         1. Event processor (background task)
-        2. Camera detector (main loop in executor)
+        2. Camera detector (main loop)
         """
         self.running = True
 
@@ -148,7 +159,7 @@ class FallDetectionSystem:
             event_task = asyncio.create_task(self.event_manager.process_events())
             self.background_tasks.append(event_task)
 
-            # Run camera detector in executor (blocking operation)
+            # Run camera detector
             logger.info("Starting camera detector...")
             logger.info("=" * 80)
             if self.settings.HEADLESS_MODE:
@@ -157,8 +168,14 @@ class FallDetectionSystem:
                 logger.info("Press 'q' in the video window to quit")
             logger.info("=" * 80)
 
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self.detector.run)
+            # If headless mode, run in executor
+            # Otherwise run in main thread (required for cv2.imshow on macOS)
+            if self.settings.HEADLESS_MODE:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, self.detector.run)
+            else:
+                # Run in main thread for GUI support
+                self.detector.run()
 
         except KeyboardInterrupt:
             logger.info("Shutdown requested by user")

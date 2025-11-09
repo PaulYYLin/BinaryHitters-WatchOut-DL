@@ -1,13 +1,16 @@
 import logging
+import time
 from typing import Any
 
 import cv2
 import mediapipe as mp
 import numpy as np
+import numpy.typing as npt
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 from ..detectors.fall_detector import FallDetectorRuleBased
+from ..utils.visualization import draw_privacy_skeleton
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,7 @@ class LiveCameraFallDetector:
         event_manager=None,
         settings=None,
         headless: bool = True,
+        privacy_mode: bool = False,
     ):
         """
         Initialize live camera fall detector.
@@ -47,10 +51,12 @@ class LiveCameraFallDetector:
             event_manager: FallEventManager instance (optional)
             settings: Settings instance with configuration (optional)
             headless: Run without GUI display (True for edge devices)
+            privacy_mode: Display only stick figure without background (False by default)
         """
         self.model_path = model_path
         self.camera_id = camera_id
         self.headless = headless
+        self.privacy_mode = privacy_mode
         self.ring_buffer = ring_buffer
         self.event_manager = event_manager
         self.settings = settings
@@ -80,11 +86,14 @@ class LiveCameraFallDetector:
         self.landmarker = vision.PoseLandmarker.create_from_options(options)
 
         # State tracking
-        self.latest_landmarks = None
-        self.previous_landmarks = None
+        self.latest_landmarks: npt.NDArray[np.float64] | None = None
+        self.previous_landmarks: npt.NDArray[np.float64] | None = None
         self.frame_count = 0
         self.fall_detected = False
         self.fall_info: dict[str, Any] = {}
+        self.display_fall_status = False  # For visual display (persists longer)
+        self.last_fall_time = 0.0  # Timestamp of last fall detection
+        self.fall_display_duration = 3.0  # Show red status for 3 seconds
 
         # Frame skip counter for buffer optimization
         self.frame_skip_counter = 0
@@ -94,6 +103,7 @@ class LiveCameraFallDetector:
         logger.info(f"  Model: {model_path}")
         logger.info(f"  Camera ID: {camera_id}")
         logger.info(f"  Headless mode: {headless}")
+        logger.info(f"  Privacy mode: {privacy_mode}")
         logger.info(f"  Ring buffer: {'enabled' if ring_buffer else 'disabled'}")
         logger.info(f"  Event manager: {'enabled' if event_manager else 'disabled'}")
 
@@ -198,8 +208,8 @@ class LiveCameraFallDetector:
         """
         height, width = frame.shape[:2]
 
-        # Determine status color and text
-        if self.fall_detected:
+        # Determine status color and text based on display status
+        if self.display_fall_status:
             status_text = "FALL DETECTED!"
             status_color = (0, 0, 255)  # Red
             bg_color = (0, 0, 128)  # Dark red background
@@ -285,9 +295,17 @@ class LiveCameraFallDetector:
                 if self.fall_detected and self.event_manager is not None:
                     logger.warning("Fall detected! Triggering event...")
                     self.event_manager.trigger_fall(self.fall_info)
+                    # Set display status and timestamp
+                    self.display_fall_status = True
+                    self.last_fall_time = time.time()
                     # Reset fall detected flag to avoid repeated triggers
                     # (cooldown is handled by event manager)
                     self.fall_detected = False
+
+                # Update display status based on time elapsed
+                if self.display_fall_status:
+                    if time.time() - self.last_fall_time > self.fall_display_duration:
+                        self.display_fall_status = False
 
                 self.frame_count += 1
 
@@ -303,8 +321,15 @@ class LiveCameraFallDetector:
 
                 # Display frame (only if not headless)
                 if not self.headless:
-                    # Draw landmarks
-                    display_frame = self._draw_landmarks_on_frame(frame)
+                    # In privacy mode, show only stick figure on black background
+                    if self.privacy_mode:
+                        display_frame = draw_privacy_skeleton(
+                            frame, self.latest_landmarks
+                        )
+                    else:
+                        # Normal mode: draw landmarks on original frame
+                        display_frame = self._draw_landmarks_on_frame(frame)
+
                     # Draw fall detection status
                     display_frame = self._draw_fall_status(display_frame)
                     # Show window

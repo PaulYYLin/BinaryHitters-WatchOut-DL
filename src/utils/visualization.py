@@ -2,6 +2,80 @@ import cv2
 import numpy as np
 
 
+def draw_privacy_skeleton(
+    frame: np.ndarray,
+    landmarks: np.ndarray,
+    visibility_threshold: float = 0.5,
+    line_color: tuple[int, int, int] = (0, 128, 0),
+    landmark_color: tuple[int, int, int] = (0, 0, 128),
+    line_thickness: int = 2,
+    landmark_radius: int = 4,
+) -> np.ndarray:
+    """
+    Draw stick figure skeleton on light background for privacy mode.
+    Only shows pose landmarks without any background image.
+
+    Args:
+        frame: BGR image frame (used only for dimensions)
+        landmarks: (33, 4) array of landmarks [x, y, z, visibility]
+        visibility_threshold: Minimum visibility to draw
+        line_color: BGR color for connection lines
+        landmark_color: BGR color for landmark points
+        line_thickness: Thickness of connection lines
+        landmark_radius: Radius of landmark circles
+
+    Returns:
+        Light frame with stick figure skeleton drawn
+    """
+    # Create light background with same dimensions as input frame
+    height, width = frame.shape[:2]
+    black_frame = np.full((height, width, 3), 240, dtype=np.uint8)
+
+    if landmarks is None:
+        return black_frame  # Note: variable name retained for backwards compatibility
+
+    # Define skeleton connections (MediaPipe Pose)
+    connections = [
+        (11, 12),  # Shoulders
+        (11, 13),
+        (13, 15),  # Left arm
+        (12, 14),
+        (14, 16),  # Right arm
+        (11, 23),
+        (12, 24),
+        (23, 24),  # Torso
+        (23, 25),
+        (25, 27),  # Left leg
+        (24, 26),
+        (26, 28),  # Right leg
+    ]
+
+    # Draw connections
+    for start_idx, end_idx in connections:
+        if (
+            landmarks[start_idx, 3] > visibility_threshold
+            and landmarks[end_idx, 3] > visibility_threshold
+        ):
+            start_point = (
+                int(landmarks[start_idx, 0] * width),
+                int(landmarks[start_idx, 1] * height),
+            )
+            end_point = (
+                int(landmarks[end_idx, 0] * width),
+                int(landmarks[end_idx, 1] * height),
+            )
+            cv2.line(black_frame, start_point, end_point, line_color, line_thickness)
+
+    # Draw landmarks
+    for landmark in landmarks:
+        if landmark[3] > visibility_threshold:
+            x = int(landmark[0] * width)
+            y = int(landmark[1] * height)
+            cv2.circle(black_frame, (x, y), landmark_radius, landmark_color, -1)
+
+    return black_frame
+
+
 def draw_skeleton_connections(
     frame: np.ndarray,
     landmarks: np.ndarray,

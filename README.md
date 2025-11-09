@@ -61,14 +61,20 @@ docker-compose logs -f
 docker-compose down
 ```
 
-### 5. Run Locally (Development)
+### 5. Run Locally (Development with uv)
 
 ```bash
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
 # Install dependencies
-pip install -r requirements.txt
+uv sync
 
 # Run
-python main.py
+uv run python main.py
+
+# Or use the console script
+uv run fall-detect
 ```
 
 ## Project Structure

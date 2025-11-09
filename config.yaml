@@ -1,0 +1,59 @@
+# Fall Detection System Configuration
+# This file contains algorithm parameters and behavior settings
+
+# ==================== Camera Settings ====================
+camera:
+  camera_id: 0
+  resolution:
+    width: 640
+    height: 480
+  capture_fps: 30
+
+# ==================== Display Settings ====================
+display:
+  headless_mode: false  # Set to true for edge devices without GUI
+  privacy_mode: true   # Show only stick figure skeleton without background
+  fall_display_duration: 3.0  # Seconds to show fall alert on screen
+
+# ==================== Fall Detection Algorithm ====================
+fall_detection:
+  # Angle-based detection
+  fall_angle_threshold: 60.0  # degrees from vertical (30-70 range)
+
+  # Height-based detection
+  height_drop_threshold: 0.3  # ratio (0.15-0.4 range)
+
+  # Velocity-based detection
+  velocity_threshold: 0.04  # normalized units (0.03-0.12 range)
+
+  # Temporal settings
+  temporal_window: 5  # frames to analyze for trends
+  min_visibility: 0.5  # minimum landmark confidence (0-1)
+
+  # Multi-criteria voting
+  vote_threshold: 1  # minimum methods that must agree (1-4)
+
+# ==================== Ring Buffer Settings ====================
+buffer:
+  duration: 30  # seconds of video to keep in buffer
+  fps: 15       # FPS for buffered video (lower than capture for efficiency)
+  frame_skip: 2 # Save every Nth frame to buffer
+  jpeg_quality: 70  # JPEG compression quality (0-100)
+
+# ==================== Video Encoding ====================
+video:
+  clip_duration: 15  # seconds to include in fall event clip
+  codec: mp4v       # mp4v (faster) or H264 (smaller)
+  bitrate: 1000000  # bits per second (1 Mbps)
+
+# ==================== Event Management ====================
+events:
+  cooldown_period: 15  # seconds between fall events
+  max_workers: 2       # thread pool size for async operations
+
+# ==================== MediaPipe Model ====================
+model:
+  num_poses: 1
+  min_pose_detection_confidence: 0.5
+  min_pose_presence_confidence: 0.5
+  min_tracking_confidence: 0.5

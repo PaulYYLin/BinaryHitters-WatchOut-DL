@@ -1,12 +1,13 @@
 """
 Configuration management for fall detection system.
-Loads settings from environment variables with sensible defaults for edge devices.
+Loads settings from config.yaml and environment variables.
 """
 
 import logging
 import os
 from pathlib import Path
 
+import yaml
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -22,71 +23,98 @@ class Settings:
     """
 
     def __init__(self):
-        # Camera settings
-        self.CAMERA_ID: int = int(os.getenv("CAMERA_ID", "0"))
-        self.CAMERA_RESOLUTION: tuple[int, int] = self._parse_resolution(
-            os.getenv("CAMERA_RESOLUTION", "640x480")
+        # Load YAML configuration
+        config_path = Path(os.getenv("CONFIG_PATH", "./config.yaml"))
+        config = self._load_yaml_config(config_path)
+
+        # Camera settings (from YAML)
+        camera_config = config.get("camera", {})
+        self.CAMERA_ID: int = camera_config.get("camera_id", 0)
+        resolution = camera_config.get("resolution", {})
+        self.CAMERA_RESOLUTION: tuple[int, int] = (
+            resolution.get("width", 640),
+            resolution.get("height", 480),
         )
-        self.CAPTURE_FPS: int = int(os.getenv("CAPTURE_FPS", "30"))
+        self.CAPTURE_FPS: int = camera_config.get("capture_fps", 30)
 
-        # Ring buffer settings (edge device optimized)
-        self.BUFFER_DURATION: int = int(os.getenv("BUFFER_DURATION", "30"))  # seconds
-        self.BUFFER_FPS: int = int(
-            os.getenv("BUFFER_FPS", "15")
-        )  # reduced FPS for buffer
-        self.FRAME_SKIP: int = int(os.getenv("FRAME_SKIP", "2"))  # save every Nth frame
-        self.JPEG_QUALITY: int = int(os.getenv("JPEG_QUALITY", "70"))  # 0-100
+        # Display settings (from YAML)
+        display_config = config.get("display", {})
+        self.HEADLESS_MODE: bool = display_config.get("headless_mode", True)
+        self.PRIVACY_MODE: bool = display_config.get("privacy_mode", False)
+        self.FALL_DISPLAY_DURATION: float = display_config.get(
+            "fall_display_duration", 3.0
+        )
 
-        # Video encoding settings
-        self.CLIP_DURATION: int = int(os.getenv("CLIP_DURATION", "15"))  # seconds
-        self.VIDEO_CODEC: str = os.getenv(
-            "VIDEO_CODEC", "mp4v"
-        )  # mp4v is faster than H264 on CPU
-        self.VIDEO_BITRATE: int = int(os.getenv("VIDEO_BITRATE", "1000000"))  # 1 Mbps
+        # Fall detection settings (from YAML)
+        fall_config = config.get("fall_detection", {})
+        self.FALL_ANGLE_THRESHOLD: float = fall_config.get("fall_angle_threshold", 45.0)
+        self.HEIGHT_DROP_THRESHOLD: float = fall_config.get(
+            "height_drop_threshold", 0.2
+        )
+        self.VELOCITY_THRESHOLD: float = fall_config.get("velocity_threshold", 0.08)
+        self.TEMPORAL_WINDOW: int = fall_config.get("temporal_window", 5)
+        self.MIN_VISIBILITY: float = fall_config.get("min_visibility", 0.5)
+        self.VOTE_THRESHOLD: int = fall_config.get("vote_threshold", 1)
 
-        # API settings
+        # Ring buffer settings (from YAML)
+        buffer_config = config.get("buffer", {})
+        self.BUFFER_DURATION: int = buffer_config.get("duration", 30)
+        self.BUFFER_FPS: int = buffer_config.get("fps", 15)
+        self.FRAME_SKIP: int = buffer_config.get("frame_skip", 2)
+        self.JPEG_QUALITY: int = buffer_config.get("jpeg_quality", 70)
+
+        # Video encoding settings (from YAML)
+        video_config = config.get("video", {})
+        self.CLIP_DURATION: int = video_config.get("clip_duration", 15)
+        self.VIDEO_CODEC: str = video_config.get("codec", "mp4v")
+        self.VIDEO_BITRATE: int = video_config.get("bitrate", 1000000)
+
+        # Event management (from YAML)
+        events_config = config.get("events", {})
+        self.COOLDOWN_PERIOD: int = events_config.get("cooldown_period", 15)
+        self.MAX_WORKERS: int = events_config.get("max_workers", 2)
+
+        # API settings (from environment variables)
         self.API_SUCCESS_ENDPOINT: str = os.getenv("API_SUCCESS_ENDPOINT", "")
         self.API_FAILURE_ENDPOINT: str = os.getenv("API_FAILURE_ENDPOINT", "")
         self.API_KEY: str = os.getenv("API_KEY", "")
-        self.API_TIMEOUT: int = int(os.getenv("API_TIMEOUT", "30"))  # seconds
+        self.API_TIMEOUT: int = int(os.getenv("API_TIMEOUT", "30"))
         self.API_RETRY_ATTEMPTS: int = int(os.getenv("API_RETRY_ATTEMPTS", "3"))
-        self.API_RETRY_DELAYS: tuple[int, ...] = (1, 2, 4)  # exponential backoff
+        self.API_RETRY_DELAYS: tuple[int, ...] = (1, 2, 4)
 
-        # Event management
-        self.COOLDOWN_PERIOD: int = int(os.getenv("COOLDOWN_PERIOD", "15"))  # seconds
-
-        # Performance settings
-        self.MAX_WORKERS: int = int(os.getenv("MAX_WORKERS", "2"))  # thread pool size
-        self.HEADLESS_MODE: bool = os.getenv("HEADLESS_MODE", "true").lower() == "true"
-
-        # Paths
+        # Paths (from environment variables)
         self.TEMP_DIR: Path = Path(os.getenv("TEMP_DIR", "/tmp/fall_events"))
         self.LOG_DIR: Path = Path(os.getenv("LOG_DIR", "./logs"))
         self.MODEL_PATH: Path = Path(
             os.getenv("MODEL_PATH", "./src/utils/pose_landmarker_lite.task")
         )
+        self.CONFIG_PATH: Path = config_path
 
         # Validate critical settings
         self._validate()
 
-    def _parse_resolution(self, resolution_str: str) -> tuple[int, int]:
+    def _load_yaml_config(self, config_path: Path) -> dict:
         """
-        Parse resolution string like '640x480' into tuple (640, 480).
+        Load configuration from YAML file.
 
         Args:
-            resolution_str: Resolution in format 'WIDTHxHEIGHT'
+            config_path: Path to config.yaml
 
         Returns:
-            Tuple of (width, height)
+            Dictionary with configuration values
         """
+        if not config_path.exists():
+            logger.warning(f"Config file not found at {config_path}, using defaults")
+            return {}
+
         try:
-            width, height = resolution_str.lower().split("x")
-            return (int(width), int(height))
-        except ValueError:
-            logger.warning(
-                f"Invalid resolution format: {resolution_str}, using default 640x480"
-            )
-            return (640, 480)
+            with open(config_path) as f:
+                config = yaml.safe_load(f)
+                logger.info(f"Loaded configuration from {config_path}")
+                return config or {}
+        except Exception as e:
+            logger.error(f"Error loading config file: {e}")
+            return {}
 
     def _validate(self):
         """Validate critical configuration settings."""
@@ -157,6 +185,10 @@ class Settings:
         logger.info(f"Video Codec: {self.VIDEO_CODEC}")
         logger.info(f"Cooldown Period: {self.COOLDOWN_PERIOD}s")
         logger.info(f"Headless Mode: {self.HEADLESS_MODE}")
+        logger.info(f"Privacy Mode: {self.PRIVACY_MODE}")
+        logger.info(f"Fall Angle Threshold: {self.FALL_ANGLE_THRESHOLD}°")
+        logger.info(f"Height Drop Threshold: {self.HEIGHT_DROP_THRESHOLD}")
+        logger.info(f"Velocity Threshold: {self.VELOCITY_THRESHOLD}")
         logger.info(f"API Success Endpoint: {self.API_SUCCESS_ENDPOINT or 'NOT SET'}")
         logger.info(f"API Failure Endpoint: {self.API_FAILURE_ENDPOINT or 'NOT SET'}")
         logger.info(f"Model Path: {self.MODEL_PATH}")
