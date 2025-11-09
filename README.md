@@ -1,81 +1,69 @@
-# Fall Detection System - Edge Device Optimized
+# WatchOut - Edge-Optimized Fall Detection System
 
-A modular fall detection system using MediaPipe pose estimation and rule-based algorithms, optimized for edge devices with video recording, ring buffer, and API integration.
+An intelligent fall detection system designed for edge devices, combining MediaPipe pose estimation with rule-based algorithms for real-time monitoring. Features hybrid processing architecture, lightweight video recording, and automated API integration.
 
-## Features
+## Highlights
 
-✅ **Real-time Fall Detection**: MediaPipe pose estimation with multiple detection algorithms
-✅ **Video Recording**: Ring buffer with JPEG compression (95% memory savings)
-✅ **API Integration**: Automatic video upload when fall detected
-✅ **Edge Optimized**: Headless mode, async I/O, minimal resource usage
-✅ **Container Ready**: Docker support with resource limits
-✅ **Configurable**: Environment-based configuration
+- **Real-time Fall Detection**: Multi-algorithm fusion with 5 detection methods
+- **Edge-Optimized Architecture**: Hybrid sync/async processing for resource-constrained devices
+- **Ultra-lightweight Video Recording**: JPEG-based ring buffer with 95% memory savings
+- **Privacy Protection**: Optional skeleton-only visualization mode
+- **Automated Event Management**: Cooldown mechanism, retry logic, and dual API endpoints
+- **Production Ready**: Docker containerization with resource limits and health checks
+- **Experiment Mode**: Comprehensive data collection for model training and analysis
+
+## Technology Stack
+
+### Core Technologies
+- **Computer Vision**: OpenCV 4.8.1 (headless build for edge devices)
+- **Pose Estimation**: MediaPipe 0.10.21 (Lite model for low-latency inference)
+- **Async I/O**: aiohttp 3.9+ (non-blocking video encoding and API uploads)
+- **Environment Management**: uv (fast Python package installer)
+
+### Detection Algorithms
+- **Angle-based Detection**: Body tilt analysis using hip-to-shoulder vectors
+- **Height-based Detection**: Vertical position tracking with dynamic thresholds
+- **Velocity-based Detection**: Rapid movement analysis using temporal derivatives
+- **Landmark-based Detection**: Key point position analysis (nose-to-hip ratio)
+- **Multi-criteria Voting**: Ensemble method combining all algorithms
+
+### Key Components
+- **Hybrid Processing Architecture**: Synchronous OpenCV capture + asynchronous event processing
+- **JPEG-compressed Ring Buffer**: Circular buffer with 70% quality compression
+- **Async Video Encoder**: Background MP4 encoding with mp4v codec
+- **Dual API Client**: Success (multipart upload) + Failure (JSON notification) endpoints
+- **Event Manager**: Queue-based processing with 15s cooldown and retry logic
+- **Configuration System**: YAML + Environment variables with validation
 
 ## Quick Start
 
-### 1. Prerequisites
+### Docker Deployment (Recommended)
 
-- Docker and Docker Compose (for container deployment)
-- OR Python 3.11+ (for local development)
-- USB camera or webcam
-- MediaPipe pose model (download instructions below)
+**Prerequisites**: Docker and Docker Compose installed
 
-### 2. Download MediaPipe Model
+1. Download MediaPipe model:
+   - URL: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task`
+   - Save to: `src/utils/pose_landmarker_lite.task`
 
-```bash
-# Create utils directory if not exists
-mkdir -p src/utils
+2. Configure environment:
+   - Copy `.env.example` to `.env`
+   - Set `API_BASE_URL` and API endpoints
+   - Adjust `CAMERA_ID` if needed (default: 0)
 
-# Download the pose landmarker lite model
-# URL: https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task
+3. Deploy:
+   - `docker-compose up -d` (start in background)
+   - `docker-compose logs -f` (view logs)
+   - `docker-compose down` (stop)
 
-# Save to: src/utils/pose_landmarker_lite.task
-```
+### Local Development
 
-### 3. Configuration
+**Prerequisites**: Python 3.11+ and uv installed
 
-```bash
-# Copy environment template
-cp .env.example .env
-
-# Edit .env with your API endpoints and settings
-nano .env
-```
-
-Key settings to configure:
-- `API_SUCCESS_ENDPOINT`: Your API endpoint for fall event uploads
-- `API_FAILURE_ENDPOINT`: Your API endpoint for failure notifications
-- `CAMERA_ID`: Camera device ID (0 for default webcam)
-- `CAMERA_RESOLUTION`: Resolution (e.g., 640x480)
-
-### 4. Deploy with Docker (Recommended for Edge Devices)
-
-```bash
-# Build and run
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop
-docker-compose down
-```
-
-### 5. Run Locally (Development with uv)
-
-```bash
-# Install uv (if not already installed)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Install dependencies
-uv sync
-
-# Run
-uv run python main.py
-
-# Or use the console script
-uv run fall-detect
-```
+1. Install uv: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+2. Install dependencies: `uv sync`
+3. Download MediaPipe model (see Docker step 1)
+4. Configure `.env` file
+5. Run: `uv run python main.py` or `uv run fall-detect`
 
 ## Project Structure
 
@@ -115,299 +103,173 @@ BinaryHitters-WatchOut-DL/
         └── pose_landmarker_lite.task # MediaPipe model (download separately)
 ```
 
-## Architecture Overview
+## Core Architecture
 
 ### System Flow
 
 ```
-Camera → Pose Detection → Fall Detection → Ring Buffer
-                              ↓
-                         Fall Detected?
-                              ↓
-                    Event Manager (async)
-                              ↓
-                    Video Encoder (async)
-                              ↓
-                    API Upload (async)
+┌─────────────┐     ┌──────────────┐     ┌────────────────┐     ┌─────────────┐
+│   Camera    │────▶│ MediaPipe    │────▶│ Fall Detector  │────▶│ Ring Buffer │
+│  (OpenCV)   │     │ Pose Model   │     │  (5 Methods)   │     │  (JPEG)     │
+└─────────────┘     └──────────────┘     └────────┬───────┘     └─────────────┘
+                                                   │
+                                           Fall Detected?
+                                                   │
+                                                   ▼
+                                         ┌──────────────────┐
+                                         │  Event Manager   │
+                                         │   (Async Queue)  │
+                                         └────────┬─────────┘
+                                                  │
+                                   ┌──────────────┼──────────────┐
+                                   ▼              ▼              ▼
+                            Clip Extract    Video Encode    API Upload
+                             (15s window)    (MP4/H264)     (Retry x3)
 ```
 
-### Components
+### Key Mechanisms
 
-#### 1. **Fall Detector** (`src/detectors/fall_detector.py`)
-Rule-based fall detection with 5 methods:
-- Angle-based (body tilt)
-- Height-based (vertical position)
-- Velocity-based (rapid movement)
-- Landmark-based (key point positions)
-- Multi-criteria (voting, recommended)
+#### 1. Hybrid Processing Architecture
+- **Main Thread**: Synchronous OpenCV capture + pose detection (for macOS GUI compatibility)
+- **Worker Thread**: Asynchronous event loop for video encoding and API uploads
+- **Benefit**: Maintains real-time camera processing while handling I/O-intensive tasks in background
 
-#### 2. **Ring Buffer** (`src/video/ring_buffer.py`)
-Memory-efficient video storage:
-- JPEG compression (70% quality)
-- 30s circular buffer
-- ~20MB memory (vs ~400MB uncompressed)
-- Auto-cleanup old frames
+#### 2. Multi-algorithm Fall Detection
+- **Voting System**: Configurable threshold (default: 1/5 methods must detect fall)
+- **Temporal Analysis**: 5-frame window for velocity calculation
+- **Adaptive Thresholds**: Height drop ratio (20%), angle threshold (45°), velocity threshold (0.08)
+- **Visibility Filtering**: Ignores low-confidence landmarks (min: 50%)
 
-#### 3. **Video Encoder** (`src/video/encoder.py`)
-Async MP4 encoding:
-- Background processing (non-blocking)
-- mp4v codec (CPU-optimized)
-- Configurable bitrate
-- Extracts 15s clips on fall detection
+#### 3. Memory-Efficient Ring Buffer
+- **JPEG Compression**: Reduces frame size by 95% (70% quality setting)
+- **Circular Storage**: 30-second rolling window at 15 FPS (~450 frames)
+- **Frame Skipping**: Saves every 2nd frame (configurable) to reduce buffer writes
+- **Memory Footprint**: ~20MB vs ~400MB uncompressed
 
-#### 4. **API Client** (`src/api/client.py`)
-Dual API integration:
-- **Success API**: Upload video + metadata
-- **Failure API**: Send text notification (when upload fails)
-- Retry logic (3 attempts, exponential backoff)
-- Async/non-blocking
+#### 4. Event Deduplication & Cooldown
+- **15-Second Cooldown**: Prevents duplicate uploads for same fall incident
+- **Timestamp Tracking**: Maintains last fall detection time
+- **Queue-based Processing**: Ensures sequential handling of fall events
 
-#### 5. **Event Manager** (`src/events/manager.py`)
-Coordinates fall events:
-- 15s cooldown (prevent duplicates)
-- Event queue (async processing)
-- Clip extraction → Encoding → Upload
-- Statistics tracking
+#### 5. Resilient API Integration
+- **Dual Endpoint Strategy**:
+  - Primary: Multipart video upload with metadata
+  - Fallback: JSON-only notification when video upload fails
+- **Exponential Backoff**: 3 retry attempts with increasing delays (1s, 2s, 4s)
+- **Async Upload**: Non-blocking I/O prevents camera pipeline stalls
+- **Device Check-in**: Periodic heartbeat to backend (configurable interval)
 
-#### 6. **Configuration** (`src/config/settings.py`)
-Environment-based config:
-- Load from .env file
-- Validation and defaults
-- Edge device optimizations
+#### 6. Privacy Mode
+- **Skeleton-only Rendering**: Displays stick figure without background video
+- **No Raw Frame Storage**: Only skeleton landmarks saved in privacy mode
+- **GDPR-friendly**: Reduces personal data exposure
 
-## Usage Examples
+#### 7. Experiment Mode
+- **Data Collection**: Saves landmarks, detection details, and video clips
+- **Timestamped Output**: Organized directory structure for analysis
+- **Training Support**: Facilitates ML model improvement and validation
 
-### Basic Usage (Container)
+## Configuration
 
-```bash
-# Start system
-docker-compose up -d
+### Environment Variables
 
-# Check status
-docker-compose ps
+Key settings in `.env` file:
 
-# View real-time logs
-docker-compose logs -f fall-detector
+| Category | Variable | Default | Description |
+|----------|----------|---------|-------------|
+| **Camera** | `CAMERA_ID` | 0 | Device ID (0=default webcam) |
+| | `CAMERA_RESOLUTION` | 640x480 | Video resolution |
+| | `CAPTURE_FPS` | 30 | Camera capture frame rate |
+| **Buffer** | `BUFFER_DURATION` | 30 | Ring buffer size (seconds) |
+| | `JPEG_QUALITY` | 70 | Compression quality (0-100) |
+| | `FRAME_SKIP` | 2 | Save every Nth frame |
+| **Video** | `CLIP_DURATION` | 15 | Fall video clip length (seconds) |
+| | `VIDEO_CODEC` | mp4v | Codec (mp4v/H264) |
+| | `VIDEO_BITRATE` | 1000000 | Encoding bitrate (1 Mbps) |
+| **API** | `API_BASE_URL` | - | Backend server base URL |
+| | `API_UPLOAD_ENDPOINT` | - | Video upload path |
+| | `API_FAILURE_ENDPOINT` | - | Failure notification path |
+| | `API_CHECKIN_ENDPOINT` | - | Device heartbeat path |
+| | `API_TIMEOUT` | 30 | Request timeout (seconds) |
+| | `API_RETRY_ATTEMPTS` | 3 | Retry count for failed uploads |
+| **Detection** | `FALL_ANGLE_THRESHOLD` | 45.0 | Max body tilt angle (degrees) |
+| | `HEIGHT_DROP_THRESHOLD` | 0.2 | Min height drop ratio |
+| | `VELOCITY_THRESHOLD` | 0.08 | Min vertical velocity |
+| | `VOTE_THRESHOLD` | 1 | Min algorithms to trigger (1-5) |
+| **System** | `HEADLESS_MODE` | true | Run without GUI |
+| | `PRIVACY_MODE` | false | Skeleton-only display |
+| | `COOLDOWN_PERIOD` | 15 | Event cooldown (seconds) |
+| | `EXP_MODE` | false | Enable experiment mode |
 
-# Stop system
-docker-compose down
-```
-
-### Local Development (with GUI)
-
-```python
-# Edit .env
-HEADLESS_MODE=false
-
-# Run
-python main.py
-
-# Press 'q' to quit
-```
-
-### Custom Configuration
-
-```python
-from src.config import get_settings
-from src import LiveCameraFallDetector
-
-# Load settings
-settings = get_settings()
-
-# Override programmatically
-settings.BUFFER_DURATION = 60  # 60s buffer
-settings.CLIP_DURATION = 20    # 20s clips
-
-# Initialize detector
-detector = LiveCameraFallDetector(
-    model_path=str(settings.MODEL_PATH),
-    camera_id=settings.CAMERA_ID,
-    ring_buffer=ring_buffer,
-    event_manager=event_manager,
-    settings=settings,
-    headless=True
-)
-```
-
-### API Endpoint Requirements
+### API Integration
 
 #### Success Endpoint (Video Upload)
-```
-POST /api/fall-events
-Content-Type: multipart/form-data
+- **Method**: POST (multipart/form-data)
+- **Fields**: video (MP4), timestamp, datetime, device_id, clip_duration, fall_info (JSON)
+- **Response**: 200 OK on successful upload
 
-Fields:
-- video: MP4 file (15s clip)
-- timestamp: Unix timestamp
-- datetime: ISO 8601 datetime
-- device_id: Camera ID
-- clip_duration: Video duration in seconds
-- fall_info: JSON with detection details
-```
+#### Failure Endpoint (Notification)
+- **Method**: POST (application/json)
+- **Body**: event_type, error, timestamp, datetime, device_id, fall_info
+- **Use Case**: Triggered when video upload fails after retries
 
-#### Failure Endpoint (Text Notification)
-```
-POST /api/fall-failures
-Content-Type: application/json
+#### Check-in Endpoint (Heartbeat)
+- **Method**: POST (application/json)
+- **Body**: device_id, timestamp, status
+- **Interval**: Configurable (default: 300s)
 
-Body:
-{
-  "event_type": "fall_detection_failure",
-  "error": "Error message",
-  "timestamp": 1234567890.123,
-  "datetime": "2024-01-01T12:00:00",
-  "device_id": 0,
-  ...fall_info
-}
-```
+## Performance Characteristics
 
-## Configuration Options
+### Resource Optimization
 
-### Environment Variables (.env)
+**Memory Usage**:
+- JPEG-compressed ring buffer: ~20 MB (vs ~400 MB uncompressed)
+- Total system RAM: 250-300 MB
+- Docker container limit: 512 MB (with 256 MB reserved)
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CAMERA_ID` | 0 | Camera device ID |
-| `CAMERA_RESOLUTION` | 640x480 | Video resolution |
-| `CAPTURE_FPS` | 30 | Camera capture FPS |
-| `BUFFER_DURATION` | 30 | Ring buffer duration (seconds) |
-| `BUFFER_FPS` | 15 | Buffer storage FPS |
-| `FRAME_SKIP` | 2 | Save every Nth frame |
-| `JPEG_QUALITY` | 70 | JPEG compression (0-100) |
-| `CLIP_DURATION` | 15 | Fall clip duration (seconds) |
-| `VIDEO_CODEC` | mp4v | Video codec (mp4v/H264) |
-| `VIDEO_BITRATE` | 1000000 | Bitrate in bps (1Mbps) |
-| `API_SUCCESS_ENDPOINT` | - | Success upload URL |
-| `API_FAILURE_ENDPOINT` | - | Failure notification URL |
-| `API_KEY` | - | Optional API key |
-| `API_TIMEOUT` | 30 | Request timeout (seconds) |
-| `API_RETRY_ATTEMPTS` | 3 | Retry count |
-| `COOLDOWN_PERIOD` | 15 | Event cooldown (seconds) |
-| `HEADLESS_MODE` | true | Run without GUI |
+**CPU Usage**:
+- MediaPipe Lite model: Optimized for edge devices
+- Async I/O: Video encoding doesn't block detection pipeline
+- mp4v codec: Faster than H264 on CPU-only devices
+- Expected usage: 40-60% single core (Raspberry Pi 4 equivalent)
 
-### Detection Parameters
+**Network**:
+- Video upload: ~1-2 MB per fall event (15s clip at 1 Mbps)
+- Retry mechanism: Exponential backoff reduces burst traffic
+- Heartbeat: Lightweight JSON payload every 5 minutes
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `fall_angle_threshold` | 45.0 | Max angle from vertical (degrees) |
-| `height_drop_threshold` | 0.2 | Min height drop ratio (20%) |
-| `velocity_threshold` | 0.08 | Min vertical velocity |
-| `temporal_window` | 5 | Frames for temporal analysis |
-| `min_visibility` | 0.5 | Min landmark visibility |
+### Edge Device Optimizations
 
-## Performance Optimization (Edge Devices)
+1. **Headless Mode**: Disables GUI rendering to save CPU cycles
+2. **Frame Skipping**: Reduces buffer writes by 50% (saves every 2nd frame)
+3. **JPEG Compression**: 95% memory reduction with minimal quality loss
+4. **Async Processing**: I/O operations don't block real-time detection
+5. **Lite Pose Model**: MediaPipe's smallest model for low-latency inference
+6. **Resource Limits**: Docker constraints prevent OOM on constrained devices
 
-### Memory Usage
-- **Ring Buffer**: JPEG compression saves 95% memory
-  - Uncompressed: ~400MB (30s @ 30fps, 640x480)
-  - Compressed: ~20MB (same duration)
-- **Frame Skip**: Reduces buffer writes by 50%
-- **Total RAM**: ~250-300MB (entire system)
+## Design Principles
 
-### CPU Usage
-- **MediaPipe Lite**: Optimized pose model
-- **Async I/O**: Video encoding doesn't block detection
-- **mp4v Codec**: Faster than H264 on CPU
-- **Headless Mode**: No GUI rendering overhead
-- **Expected**: 40-60% CPU (single core, Raspberry Pi 4 equivalent)
+Following [CLAUDE.md](CLAUDE.md) guidelines:
 
-### Resource Limits (Docker)
-```yaml
-resources:
-  limits:
-    cpus: '2.0'      # 2 cores max
-    memory: 512M     # 512MB max
-  reservations:
-    memory: 256M     # 256MB reserved
-```
+- **Loose Coupling**: Modular architecture with clear interfaces (detectors, video, API, events)
+- **Clear Architecture**: Layered design (camera → detection → events → API)
+- **English Documentation**: Comprehensive inline comments and docstrings
+- **Proper Logging**: Using Python logging module (no print statements)
+- **Environment Management**: uv-based dependency management for reproducible builds
 
-## Troubleshooting
-
-### Camera Not Found
-```bash
-# Check available cameras
-ls -la /dev/video*
-
-# Update CAMERA_ID in .env
-CAMERA_ID=1  # Try different IDs
-```
-
-### Model Not Found
-```bash
-# Ensure model is in correct location
-ls -lh src/utils/pose_landmarker_lite.task
-
-# Download if missing (see Quick Start section)
-```
-
-### API Upload Fails
-```bash
-# Check logs
-docker-compose logs -f fall-detector
-
-# Verify API endpoints in .env
-# Check network connectivity
-# Review API_RETRY_ATTEMPTS setting
-```
-
-### High Memory Usage
-```bash
-# Reduce buffer duration
-BUFFER_DURATION=20  # From 30s to 20s
-
-# Reduce JPEG quality
-JPEG_QUALITY=60  # From 70 to 60
-
-# Increase frame skip
-FRAME_SKIP=3  # From 2 to 3
-```
-
-### High CPU Usage
-```bash
-# Lower resolution
-CAMERA_RESOLUTION=320x240
-
-# Reduce capture FPS
-CAPTURE_FPS=15
-
-# Increase frame skip
-FRAME_SKIP=3
-```
-
-## Development
-
-### Running Tests (Local)
-```bash
-# Install dev dependencies
-pip install -r requirements.txt
-
-# Run with test mode
-python main.py
-```
-
-### Logs Location
-- Container: `docker-compose logs -f`
-- Local: `./logs/fall_detection.log`
-
-### Debug Mode
-```python
-# Edit main.py
-logging.basicConfig(level=logging.DEBUG)  # Change from INFO
-```
-
-## Design Principles (from CLAUDE.md)
-
-✅ **Loose Coupling**: Independent modules with clear interfaces
-✅ **Clear Architecture**: Layered design (detection → events → api)
-✅ **English Comments**: Comprehensive documentation
-✅ **Proper Logging**: Using logging module (no print statements)
 
 ## License
 
-This project is part of the BinaryHitters-WatchOut-DL system.
+MIT License - Part of the BinaryHitters-WatchOut-DL system
 
-## Credits
+## Acknowledgments
 
-- **MediaPipe**: Google's pose estimation framework
+- **MediaPipe** (Google): Pose estimation framework
 - **OpenCV**: Computer vision library
-- **aiohttp**: Async HTTP client
+- **aiohttp**: Asynchronous HTTP client library
+
+---
+
+**Project**: WatchOut Fall Detection System
+**Organization**: BinaryHitters
+**Maintained by**: BinaryHitters Team
