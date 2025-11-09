@@ -288,8 +288,9 @@ class LiveCameraFallDetector:
                 if self.ring_buffer is not None:
                     self.frame_skip_counter += 1
                     if self.frame_skip_counter >= self.frame_skip:
-                        # In privacy mode, save stick figure frame instead of original
-                        if self.privacy_mode and self.latest_landmarks is not None:
+                        # In privacy mode, ALWAYS save stick figure frame (even if landmarks are None)
+                        # This prevents privacy leakage when detection fails or switches targets
+                        if self.privacy_mode:
                             privacy_frame = draw_privacy_skeleton(
                                 frame, self.latest_landmarks
                             )
