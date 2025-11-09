@@ -1,0 +1,22 @@
+# Core dependencies for fall detection system (edge device optimized)
+
+# Numerical computing
+numpy>=1.24.0,<2.0.0
+
+# Computer vision (headless version for containers)
+opencv-python-headless==4.8.1.78
+
+# Pose detection
+mediapipe==0.10.21
+
+# Async HTTP client
+aiohttp>=3.9.0
+
+# Environment variable management
+python-dotenv>=1.0.0
+
+# Development dependencies (code quality)
+pre-commit>=3.5.0
+black>=24.10.0
+ruff>=0.8.0
+mypy>=1.13.0
