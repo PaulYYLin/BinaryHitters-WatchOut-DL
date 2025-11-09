@@ -105,6 +105,8 @@ class FallDetectionSystem:
         self.api_client = AsyncAPIClient(
             success_endpoint=self.settings.API_SUCCESS_ENDPOINT,
             failure_endpoint=self.settings.API_FAILURE_ENDPOINT,
+            checkin_endpoint=self.settings.API_CHECKIN_ENDPOINT,
+            device_uid=self.settings.DEVICE_UID,
             api_key=self.settings.API_KEY,
             timeout=self.settings.API_TIMEOUT,
             retry_attempts=self.settings.API_RETRY_ATTEMPTS,
@@ -143,13 +145,52 @@ class FallDetectionSystem:
 
         logger.info("All components initialized successfully")
 
+    async def periodic_checkin(self):
+        """
+        Periodic device check-in task.
+
+        Sends check-in requests to the server at regular intervals
+        to indicate that the device is online and operational.
+        """
+        if not self.settings.API_CHECKIN_ENDPOINT or not self.settings.DEVICE_UID:
+            logger.info("Device check-in not configured, skipping periodic check-ins")
+            return
+
+        logger.info(
+            f"Starting periodic device check-in "
+            f"(interval: {self.settings.CHECKIN_INTERVAL}s)"
+        )
+
+        while self.running:
+            try:
+                success = await self.api_client.device_checkin()
+                if success:
+                    logger.info(
+                        f"Device check-in completed successfully "
+                        f"(next check-in in {self.settings.CHECKIN_INTERVAL}s)"
+                    )
+                else:
+                    logger.warning(
+                        f"Device check-in failed, will retry in "
+                        f"{self.settings.CHECKIN_INTERVAL}s"
+                    )
+
+            except Exception as e:
+                logger.error(f"Error during device check-in: {e}")
+
+            # Wait for next check-in interval
+            await asyncio.sleep(self.settings.CHECKIN_INTERVAL)
+
+        logger.info("Periodic device check-in stopped")
+
     async def run(self):
         """
         Run the fall detection system.
 
         Starts:
         1. Event processor (background task)
-        2. Camera detector (main loop)
+        2. Periodic device check-in (background task)
+        3. Camera detector (main loop)
         """
         self.running = True
 
@@ -158,6 +199,11 @@ class FallDetectionSystem:
             logger.info("Starting event processor...")
             event_task = asyncio.create_task(self.event_manager.process_events())
             self.background_tasks.append(event_task)
+
+            # Start periodic device check-in in background
+            logger.info("Starting periodic device check-in...")
+            checkin_task = asyncio.create_task(self.periodic_checkin())
+            self.background_tasks.append(checkin_task)
 
             # Run camera detector
             logger.info("Starting camera detector...")

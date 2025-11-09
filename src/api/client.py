@@ -29,6 +29,8 @@ class AsyncAPIClient:
         self,
         success_endpoint: str,
         failure_endpoint: str,
+        checkin_endpoint: str | None = None,
+        device_uid: str | None = None,
         api_key: str | None = None,
         timeout: int = 30,
         retry_attempts: int = 3,
@@ -40,6 +42,8 @@ class AsyncAPIClient:
         Args:
             success_endpoint: URL for successful fall event uploads (with video)
             failure_endpoint: URL for failure notifications (text only)
+            checkin_endpoint: URL for device check-in endpoint
+            device_uid: Unique identifier for this device
             api_key: Optional API key for authentication
             timeout: Request timeout in seconds
             retry_attempts: Number of retry attempts
@@ -47,6 +51,8 @@ class AsyncAPIClient:
         """
         self.success_endpoint = success_endpoint
         self.failure_endpoint = failure_endpoint
+        self.checkin_endpoint = checkin_endpoint
+        self.device_uid = device_uid
         self.api_key = api_key
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.retry_attempts = retry_attempts
@@ -311,11 +317,64 @@ class AsyncAPIClient:
 
         return any(results)
 
+    async def device_checkin(self) -> bool:
+        """
+        Send device check-in request to the server.
+
+        This method should be called periodically (e.g., every minute)
+        to notify the server that the device is online and operational.
+
+        Returns:
+            True if check-in successful, False otherwise
+        """
+        if not self.checkin_endpoint:
+            logger.warning("Check-in endpoint not configured, skipping check-in")
+            return False
+
+        if not self.device_uid:
+            logger.warning("Device UID not configured, skipping check-in")
+            return False
+
+        session = await self._get_session()
+
+        # Construct the full URL with device_uid
+        checkin_url = f"{self.checkin_endpoint}/{self.device_uid}"
+
+        try:
+            logger.debug(f"Sending device check-in to {checkin_url}")
+
+            async with session.get(
+                checkin_url, headers=self._get_headers()
+            ) as response:
+
+                if response.status == 200:
+                    logger.debug(f"Device check-in successful for {self.device_uid}")
+                    return True
+                else:
+                    error_text = await response.text()
+                    logger.warning(
+                        f"Check-in failed with status {response.status}: {error_text}"
+                    )
+                    return False
+
+        except TimeoutError:
+            logger.warning("Check-in timeout")
+            return False
+
+        except aiohttp.ClientError as e:
+            logger.warning(f"Network error during check-in: {e}")
+            return False
+
+        except Exception as e:
+            logger.error(f"Unexpected error during check-in: {e}")
+            return False
+
     def __repr__(self) -> str:
         """String representation of API client."""
         return (
             f"AsyncAPIClient("
             f"success={bool(self.success_endpoint)}, "
             f"failure={bool(self.failure_endpoint)}, "
+            f"checkin={bool(self.checkin_endpoint)}, "
             f"retries={self.retry_attempts})"
         )

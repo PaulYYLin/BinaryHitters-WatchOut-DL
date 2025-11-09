@@ -87,12 +87,24 @@ class Settings:
         self.EXP_SAVE_VIDEO: bool = experiment_config.get("save_video", True)
 
         # API settings (from environment variables)
-        self.API_SUCCESS_ENDPOINT: str = os.getenv("API_SUCCESS_ENDPOINT", "")
+        self.API_BASE_URL: str = os.getenv("API_BASE_URL", "")
+        self.API_SUCCESS_ENDPOINT: str = (
+            f"{self.API_BASE_URL}{os.getenv('API_UPLOAD_ENDPOINT', '')}"
+            if self.API_BASE_URL
+            else ""
+        )
         self.API_FAILURE_ENDPOINT: str = os.getenv("API_FAILURE_ENDPOINT", "")
+        self.API_CHECKIN_ENDPOINT: str = (
+            f"{self.API_BASE_URL}{os.getenv('API_CHECKIN_ENDPOINT', '')}"
+            if self.API_BASE_URL
+            else ""
+        )
+        self.DEVICE_UID: str = os.getenv("DEVICE_UID", "")
         self.API_KEY: str = os.getenv("API_KEY", "")
         self.API_TIMEOUT: int = int(os.getenv("API_TIMEOUT", "30"))
         self.API_RETRY_ATTEMPTS: int = int(os.getenv("API_RETRY_ATTEMPTS", "3"))
         self.API_RETRY_DELAYS: tuple[int, ...] = (1, 2, 4)
+        self.CHECKIN_INTERVAL: int = int(os.getenv("CHECKIN_INTERVAL", "60"))
 
         # Paths (from environment variables)
         self.TEMP_DIR: Path = Path(os.getenv("TEMP_DIR", "/tmp/fall_events"))
@@ -131,6 +143,9 @@ class Settings:
     def _validate(self):
         """Validate critical configuration settings."""
         # Check API endpoints
+        if not self.API_BASE_URL:
+            logger.warning("API_BASE_URL not set - API features will be disabled")
+
         if not self.API_SUCCESS_ENDPOINT:
             logger.warning(
                 "API_SUCCESS_ENDPOINT not set - fall events will not be uploaded"
@@ -139,6 +154,16 @@ class Settings:
         if not self.API_FAILURE_ENDPOINT:
             logger.warning(
                 "API_FAILURE_ENDPOINT not set - failure notifications will not be sent"
+            )
+
+        if not self.API_CHECKIN_ENDPOINT:
+            logger.warning(
+                "API_CHECKIN_ENDPOINT not set - device check-ins will not be performed"
+            )
+
+        if not self.DEVICE_UID:
+            logger.warning(
+                "DEVICE_UID not set - device identification will be disabled"
             )
 
         # Check model path
@@ -206,8 +231,12 @@ class Settings:
         logger.info(f"Fall Angle Threshold: {self.FALL_ANGLE_THRESHOLD}°")
         logger.info(f"Height Drop Threshold: {self.HEIGHT_DROP_THRESHOLD}")
         logger.info(f"Velocity Threshold: {self.VELOCITY_THRESHOLD}")
+        logger.info(f"API Base URL: {self.API_BASE_URL or 'NOT SET'}")
         logger.info(f"API Success Endpoint: {self.API_SUCCESS_ENDPOINT or 'NOT SET'}")
         logger.info(f"API Failure Endpoint: {self.API_FAILURE_ENDPOINT or 'NOT SET'}")
+        logger.info(f"API Checkin Endpoint: {self.API_CHECKIN_ENDPOINT or 'NOT SET'}")
+        logger.info(f"Device UID: {self.DEVICE_UID or 'NOT SET'}")
+        logger.info(f"Checkin Interval: {self.CHECKIN_INTERVAL}s")
         logger.info(f"Model Path: {self.MODEL_PATH}")
         logger.info("=" * 60)
 
